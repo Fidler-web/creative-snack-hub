@@ -23,6 +23,8 @@
   .total { display:flex; justify-content:space-between; font-weight:bold; font-size:1.1rem; }
   button { width:100%; padding:14px; font-size:1rem; font-weight:bold; border:0; border-radius:10px; background:var(--brand); color:#fff; cursor:pointer; }
   button:disabled { opacity:.6; }
+  .opt { display:flex; align-items:center; gap:10px; margin:10px 0; color:var(--ink); font-size:1rem; }
+  .opt input { width:auto; }
   .msg { padding:12px; border-radius:8px; margin-top:12px; display:none; }
   .msg.err { display:block; color:var(--err); border:1px solid var(--err); }
   .msg.ok { display:block; color:var(--ok); border:1px solid var(--ok); }
@@ -40,9 +42,18 @@
       <label for="area">Delivery area</label>
       <select id="area"><option value="">Choose area</option></select>
       <label for="landmark">Landmark or house description</label>
-      <input id="landmark" maxlength="120" placeholder="e.g. jujasquare, containers">
+      <input id="landmark" maxlength="120" placeholder="e.g. near the gate, blue door">
     </div>
     <div class="card" id="products"><div style="color:var(--muted)">Loading products...</div></div>
+    <div class="card">
+      <strong>Payment</strong>
+      <label class="opt"><input type="radio" name="pay" value="mpesa" checked> Pay now with M-Pesa</label>
+      <label class="opt"><input type="radio" name="pay" value="cod"> Pay on delivery</label>
+      <div id="mpesaBox">
+        <label for="mpesa">M-Pesa number (leave empty to use your phone number)</label>
+        <input id="mpesa" type="tel" inputmode="tel" placeholder="0712345678">
+      </div>
+    </div>
     <div class="card total"><span>Total</span><span id="total">KSh 0</span></div>
     <button id="go" type="submit">Send order</button>
     <div id="msg" class="msg" role="status"></div>
@@ -50,7 +61,7 @@
 </main>
 <script>
 // 1) Paste your Apps Script Web app URL here (ends in /exec)
-const API_URL = "https://script.google.com/macros/s/AKfycbw94Uu4TRKBtjRimGqbJWQzxWwEKxxXfjgcZi15yhCsaLlyqpOH5IVYUtPoPY1Telwk0A/exec";
+const API_URL = "PASTE_YOUR_WEB_APP_URL_HERE";
 
 // Used only if the sheet cannot be reached, so the form still shows. Prices are re-checked by the server.
 const FALLBACK = {
@@ -111,6 +122,7 @@ $("f").addEventListener("submit", async ev => {
   if (!/^(\+?254|0)[17]\d{8}$/.test($("phone").value.replace(/\s+/g, ""))) return show("Enter a valid Kenyan phone number, e.g. 0712345678.", "err");
   if (!$("area").value) return show("Please choose your area.", "err");
   if (!items.length) return show("Add at least one product.", "err");
+  if (payMethod() === "mpesa" && $("mpesa").value.trim() && !/^(\+?254|0)[17]\d{8}$/.test($("mpesa").value.replace(/\s+/g, ""))) return show("Enter a valid M-Pesa number.", "err");
 
   $("go").disabled = true; show("Sending...", "ok");
   try {
@@ -119,16 +131,44 @@ $("f").addEventListener("submit", async ev => {
       headers: {"Content-Type": "text/plain;charset=utf-8"},   // avoids a CORS preflight with Apps Script
       body: JSON.stringify({
         action: "order", client_name: $("name").value, client_phone: $("phone").value,
-        area_id: $("area").value, landmark: $("landmark").value, items: items
+        area_id: $("area").value, landmark: $("landmark").value, items: items,
+        payment_method: payMethod(), mpesa_phone: $("mpesa").value
       })
     });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || "Order failed");
-    show("Order " + d.order_id + " received. Total KSh " + d.total + ". " + d.distributor + " will deliver to " + d.area + ".", "ok");
-    $("f").reset(); updateTotal();
+    const base = "Order " + d.order_id + " received. Total KSh " + d.total + ". " + d.distributor + " will deliver to " + d.area + ".";
+    if (d.payment === "stk_sent") { show(base + " Check your phone and enter your M-Pesa PIN to pay.", "ok"); pollPayment(d.order_id, base); }
+    else if (d.payment === "stk_failed") show(base + " " + d.payment_error, "err");
+    else show(base + " Please pay on delivery.", "ok");
+    $("f").reset(); updateTotal(); toggleMpesa();
   } catch (e) {
     show("Could not send: " + e.message, "err");
   } finally { $("go").disabled = false; }
+});
+
+function payMethod() { return document.querySelector('input[name="pay"]:checked').value; }
+function toggleMpesa() { $("mpesaBox").style.display = payMethod() === "mpesa" ? "block" : "none"; }
+document.querySelectorAll('input[name="pay"]').forEach(r => r.addEventListener("change", toggleMpesa));
+
+async function pollPayment(orderId, base) {
+  for (let i = 0; i < 20; i++) {                       // about 80 seconds
+    await new Promise(r => setTimeout(r, 4000));
+    try {
+      const d = await (await fetch(API_URL + "?action=pay&order_id=" + encodeURIComponent(orderId))).json();
+      if (d.ok && d.payment_status === "Paid") return show(base + " Payment received (" + d.receipt + "). Thank you!", "ok");
+      if (d.ok && d.payment_status === "Failed") return show(base + " The M-Pesa payment was not completed. You can pay on delivery.", "err");
+    } catch (e) { /* keep waiting */ }
+  }
+  show(base + " We have not received the payment yet. If you paid, it will show once confirmed.", "ok");
+}
+
+toggleMpesa();
+load();
+</script>
+</body>
+</html>
+https://script.google.com/macros/s/AKfycbw94Uu4TRKBtjRimGqbJWQzxWwEKxxXfjgcZi15yhCsaLlyqpOH5IVYUtPoPY1Telwk0A/exec
 });
 
 load();
